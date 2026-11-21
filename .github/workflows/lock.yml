@@ -1,25 +1,43 @@
-name: 'Lock Threads'
+name: 'Thread Lock Candidates (audit only)'
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '23 8 * * 1'
   workflow_dispatch:
 
 permissions:
-  issues: write
-  pull-requests: write
-
-concurrency:
-  group: lock
+  contents: read
+  issues: read
+  pull-requests: read
 
 jobs:
-  action:
+  audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: dessant/lock-threads@89ae32b08ed1a541efecbab17912962a5e38981c # v6.0.2
+      - name: List inactive discussions without changing them
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ github.token }}
-          issue-inactive-days: '90'
-          issue-lock-reason: 'resolved'
-          pr-inactive-days: '365'
-          pr-lock-reason: 'resolved'
+          script: |
+            const {owner, repo} = context.repo;
+            const {data: issues} = await github.rest.issues.listForRepo({
+              owner, repo, state: 'closed', sort: 'updated', direction: 'desc', per_page: 100
+            });
+            const now = Date.now();
+            const candidates = issues.filter(issue => {
+              const minDays = issue.pull_request ? 365 : 90;
+              return (now - Date.parse(issue.updated_at)) > minDays * 86400000;
+            });
+            const lines = [
+              '## Thread locking candidates',
+              '',
+              'Read-only sample: the 100 most recently updated closed issues and PRs.',
+              'No labels, locks, issues, or PRs were modified.',
+              '',
+              ...candidates.map(issue =>
+                '- #' + issue.number + ' ' + (issue.pull_request ? '(PR) ' : '(issue) ') +
+                issue.title.replace(/[\r\n]/g, ' ') + ' — last updated ' + issue.updated_at
+              )
+            ];
+            if (candidates.length === 0) lines.push('No candidates in the sampled window.');
+            await core.summary.addRaw(lines.join('\n') + '\n').write();
